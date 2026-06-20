@@ -109,7 +109,7 @@ class AffiliateFilter:
         ]
         prompt = _CLASSIFY_PROMPT.format(keyword=keyword, results="\n".join(lines))
 
-        text = self._client.generate(prompt, max_tokens=1024)
+        text = self._client.generate(prompt, max_tokens=2048, json_mode=True)
         try:
             parsed = json.loads(_extract_json(text))
             return {int(item["position"]): item for item in parsed}

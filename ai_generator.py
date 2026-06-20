@@ -60,7 +60,17 @@ class AiGenerator:
         feedback = ""
         last_errors: list[str] = []
         for attempt in range(1, _MAX_ATTEMPTS + 1):
-            content = self._call(keyword, geo, language, competitors, feedback)
+            try:
+                content = self._call(keyword, geo, language, competitors, feedback)
+            except (json.JSONDecodeError, KeyError, ValueError) as exc:
+                # Model returned malformed/empty JSON — retry instead of crashing.
+                last_errors = [f"invalid JSON output: {exc}"]
+                logger.warning("AI attempt %d returned invalid JSON: %s", attempt, exc)
+                feedback = (
+                    "Your previous answer was not valid JSON. Return ONLY a JSON "
+                    'object: {"h1": "...", "meta_title": "...", "meta_description": "..."}\n'
+                )
+                continue
             errors = validate(content, keyword)
             if not errors:
                 logger.info("AI meta accepted on attempt %d", attempt)
@@ -96,7 +106,7 @@ class AiGenerator:
             desc_max=DESCRIPTION_MAX_LEN,
             feedback=feedback,
         )
-        raw = self._client.generate(prompt, system=_SYSTEM, max_tokens=1024)
+        raw = self._client.generate(prompt, system=_SYSTEM, max_tokens=2048, json_mode=True)
         data = json.loads(_extract_json(raw))
         return SeoContent(
             h1=data["h1"].strip(),

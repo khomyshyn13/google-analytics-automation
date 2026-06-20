@@ -18,10 +18,16 @@ class GeminiClient:
         self._client = genai.Client(api_key=api_key)
         self._model = model
 
-    def generate(self, prompt: str, system: str | None = None, max_tokens: int = 1024) -> str:
+    def generate(
+        self,
+        prompt: str,
+        system: str | None = None,
+        max_tokens: int = 2048,
+        json_mode: bool = False,
+    ) -> str:
         for attempt in range(_MAX_RATE_RETRIES + 1):
             try:
-                return self._generate_once(prompt, system, max_tokens)
+                return self._generate_once(prompt, system, max_tokens, json_mode)
             except ClientError as exc:
                 if exc.code == 429 and _is_per_minute(exc) and attempt < _MAX_RATE_RETRIES:
                     wait = _retry_delay(exc)
@@ -39,11 +45,15 @@ class GeminiClient:
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type(ServerError),
     )
-    def _generate_once(self, prompt: str, system: str | None, max_tokens: int) -> str:
+    def _generate_once(
+        self, prompt: str, system: str | None, max_tokens: int, json_mode: bool = False
+    ) -> str:
         config = types.GenerateContentConfig(
             max_output_tokens=max_tokens,
             temperature=0.7,
             system_instruction=system,
+            # Force a pure-JSON response so "thinking" models don't wrap it in prose.
+            response_mime_type="application/json" if json_mode else None,
         )
         resp = self._client.models.generate_content(
             model=self._model,
