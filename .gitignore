@@ -1,0 +1,15 @@
+.env
+
+service_account.json
+credentials.json
+token.json
+*.json.key
+
+__pycache__/
+*.pyc
+
+.venv/
+venv/
+
+.DS_Store
+*.log
