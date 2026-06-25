@@ -36,6 +36,11 @@ class Settings:
     # SERP
     serper_api_key: str = field(default_factory=lambda: _require("SERPER_API_KEY"))
 
+    # Optional proxy scraping API ScraperAPI
+    scraper_api_key: str = field(
+        default_factory=lambda: os.getenv("SCRAPER_API_KEY", "").strip()
+    )
+
     # Gemini
     gemini_api_key: str = field(default_factory=lambda: _require("GEMINI_API_KEY"))
     gemini_model: str = field(

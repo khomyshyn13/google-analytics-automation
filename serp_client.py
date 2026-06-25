@@ -5,6 +5,7 @@ import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import SERP_TOP_N
+from llm_client import GeminiClient
 from models import SerpResult
 
 logger = logging.getLogger(__name__)
@@ -18,13 +19,18 @@ def _domain(url: str) -> str:
 
 
 class SerpClient:
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, llm: GeminiClient | None = None):
         self._api_key = api_key
+        self._llm = llm
+        self._review_word_cache: dict[str, str] = {}
 
-    def search(self, keyword: str, geo: str) -> list[SerpResult]:
-        queries = [keyword]
-        if "casino" not in keyword.lower():
-            queries.append(f"{keyword} casino")
+    def search(self, keyword: str, geo: str, language: str = "en") -> list[SerpResult]:
+        # Raw keyword + a localized "casino review" query so genuine review sites
+        # surface in the target language (e.g. "aviator casino avis" for fr),
+        # instead of movies/clones that dominate a bare brand query.
+        review_word = self._review_word(language)
+        base = keyword if "casino" in keyword.lower() else f"{keyword} casino"
+        queries = [keyword, f"{base} {review_word}"]
 
         result_lists = [self._search_once(q, geo) for q in queries]
 
@@ -46,6 +52,29 @@ class SerpClient:
             "Merged SERP: %d unique result(s) from %d quer(ies)", len(merged), len(queries)
         )
         return merged
+
+    def _review_word(self, language: str) -> str:
+        lang = language.lower().strip()
+        if not lang or lang in ("en", "english"):
+            return "review"
+        if lang in self._review_word_cache:
+            return self._review_word_cache[lang]
+        if not self._llm:
+            return "review"
+
+        prompt = (
+            f'Translate the single word "review" (as used in "casino review") '
+            f'into the language "{language}". Reply with ONLY that one word, nothing else.'
+        )
+        try:
+            word = self._llm.generate(prompt, max_tokens=20).strip().split()[0].strip('".,')
+            word = word or "review"
+        except Exception as exc:
+            logger.warning("Review-word translation failed for %r (%s); using 'review'", language, exc)
+            word = "review"
+        self._review_word_cache[lang] = word
+        logger.info("Localized review word for %r -> %r", language, word)
+        return word
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def _search_once(self, query: str, geo: str) -> list[SerpResult]:

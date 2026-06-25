@@ -33,7 +33,7 @@ class Pipeline:
             settings.spreadsheet_url,
             settings.worksheet_name,
         )
-        self.serp = SerpClient(settings.serper_api_key)
+        self.serp = SerpClient(settings.serper_api_key, llm)
         self.filter = AffiliateFilter(llm)
         self.generator = AiGenerator(llm)
         self.docs = DocsClient(creds, settings.drive_folder_id)
@@ -43,7 +43,7 @@ class Pipeline:
         logger.info("=== Row %d: %r | %s | %s ===", row.row_number, row.keyword, row.geo, row.language)
 
         # SERP (top-10)
-        serp_results = self.serp.search(row.keyword, row.geo)[:SERP_TOP_N]
+        serp_results = self.serp.search(row.keyword, row.geo, row.language)[:SERP_TOP_N]
         if not serp_results:
             outcome.error = "SERP returned no results"
             return outcome
@@ -56,7 +56,9 @@ class Pipeline:
 
         # Scrape each selected site (fault tolerant)
         for result in selected:
-            outcome.competitors.append(scrape_competitor(result))
+            outcome.competitors.append(
+                scrape_competitor(result, self.settings.scraper_api_key)
+            )
 
         ok = sum(1 for c in outcome.competitors if c.success)
         logger.info("Scraped %d/%d competitor(s) successfully", ok, len(selected))

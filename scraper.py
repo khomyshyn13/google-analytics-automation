@@ -16,28 +16,25 @@ _HEADERS = {
     "Accept-Language": "en;q=0.9",
 }
 _MAX_STRUCTURE_ITEMS = 25
+_SCRAPERAPI_ENDPOINT = "https://api.scraperapi.com/"
 
 
-def scrape_competitor(result: SerpResult) -> CompetitorReport:
+def scrape_competitor(result: SerpResult, scraper_api_key: str = "") -> CompetitorReport:
     report = CompetitorReport(
         link=result.link, position=result.position, domain=result.domain
     )
-    try:
-        with httpx.Client(
-            timeout=20, follow_redirects=True, headers=_HEADERS
-        ) as client:
-            resp = client.get(result.link)
-            resp.raise_for_status()
-            html = resp.text
-    except httpx.HTTPStatusError as exc:
+
+    html, reason = _fetch_direct(result.link)
+    if html is None and scraper_api_key:
+        logger.info("Direct fetch failed (%s); retrying via ScraperAPI: %s", reason, result.link)
+        html, proxy_reason = _fetch_via_scraperapi(result.link, scraper_api_key)
+        if html is None:
+            reason = f"{reason}; proxy: {proxy_reason}"
+
+    if html is None:
         report.success = False
-        report.failure_reason = f"HTTP {exc.response.status_code}"
-        logger.warning("Scrape failed %s: %s", result.link, report.failure_reason)
-        return report
-    except Exception as exc:  # noqa: BLE001 - any network error -> reported, not fatal
-        report.success = False
-        report.failure_reason = f"{type(exc).__name__}: {exc}"
-        logger.warning("Scrape failed %s: %s", result.link, report.failure_reason)
+        report.failure_reason = reason
+        logger.warning("Scrape failed %s: %s", result.link, reason)
         return report
 
     try:
@@ -51,6 +48,31 @@ def scrape_competitor(result: SerpResult) -> CompetitorReport:
         report.success = False
         report.failure_reason = "no H1/title/meta found (likely JS-rendered or blocked)"
     return report
+
+
+def _fetch_direct(url: str) -> tuple[str | None, str]:
+    try:
+        with httpx.Client(timeout=20, follow_redirects=True, headers=_HEADERS) as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+            return resp.text, ""
+    except httpx.HTTPStatusError as exc:
+        return None, f"HTTP {exc.response.status_code}"
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+def _fetch_via_scraperapi(url: str, api_key: str) -> tuple[str | None, str]:
+    params = {"api_key": api_key, "url": url, "render": "true"}
+    try:
+        with httpx.Client(timeout=70, follow_redirects=True) as client:
+            resp = client.get(_SCRAPERAPI_ENDPOINT, params=params)
+            resp.raise_for_status()
+            return resp.text, ""
+    except httpx.HTTPStatusError as exc:
+        return None, f"HTTP {exc.response.status_code}"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"{type(exc).__name__}: {exc}"
 
 
 def _parse_into(html: str, report: CompetitorReport) -> None:
