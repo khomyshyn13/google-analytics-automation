@@ -1,6 +1,7 @@
 import json
 import logging
 
+from config import SERP_TOP_N
 from llm_client import GeminiClient
 from models import SerpResult
 
@@ -20,26 +21,32 @@ _HARD_EXCLUDE = (
     "tiktok.com",
 )
 
-_CLASSIFY_PROMPT = """You are classifying Google search results for the query "{keyword}".
+_CLASSIFY_PROMPT = """You audit Google results for the query "{keyword}" to find
+AFFILIATE CASINO-REVIEW sites.
 
-Goal: find third-party AFFILIATE / REVIEW sites about casinos/bookmakers
-(portals that review, compare, rank or promote operators to earn referral).
+DEFINITION — an affiliate casino-review site is a THIRD-PARTY website whose
+purpose is to review, compare, rate, rank or recommend online casinos/bookmakers
+to visitors (earning commission via referral links). Typical signs: words like
+"review", "best casinos", "top casino", rating/comparison tables, or bonus guides
+that cover MULTIPLE operators.
 
-Classify each result. Mark is_affiliate_review = FALSE only for:
-- the ONE official website of the operator itself. The official site is the
-  short, canonical brand domain (e.g. "brand.com"). Domains that contain the
-  brand name PLUS extra words or geo (e.g. "brand-india.in", "brand-review.com",
-  "brand-bonus.net", "brandbookmaker.com") are almost always AFFILIATES, not the
-  official site -> mark them TRUE.
-- news/media outlets, forums, social media, app stores, regulators, Wikipedia,
-  and generic consumer-review platforms (e.g. trustpilot.com).
+Mark is_affiliate_review = TRUE ONLY for such third-party review/comparison sites.
 
-Everything else that is casino/bookmaker related -> is_affiliate_review = TRUE.
+Mark is_affiliate_review = FALSE for everything else, including:
+- the operator's own official website,
+- mirror / clone / landing pages that promote ONE single operator (even if the
+  domain contains the brand name, e.g. "brand-india.in", "brandbonus.com") — these
+  are not review sites,
+- news/media, blogs not focused on casino reviews, forums, social media,
+  app stores, regulators, Wikipedia, payment providers,
+- generic consumer-review platforms.
 
-Return ONLY a JSON array, one object per result, in the SAME order:
-[{{"position": <int>, "is_affiliate_review": <true|false>, "reason": "<short>"}}]
+When unsure, mark FALSE.
 
-Results:
+For EACH item return an object: {{"position": <int>, "is_affiliate_review": <true|false>, "reason": "<short>"}}
+Return ONLY a JSON array, in the SAME order.
+
+Items:
 {results}
 """
 
@@ -50,54 +57,33 @@ class AffiliateFilter:
 
     def select(
         self, results: list[SerpResult], keyword: str, target: int) -> tuple[list[SerpResult], list[str]]:
-        """Return up to `target` affiliate sites + notes about what was skipped.
-
-        Never goes beyond the provided list (caller passes only top-10)."""
         notes: list[str] = []
         candidates = [r for r in results if not self._hard_excluded(r, notes)]
         if not candidates:
-            return [], notes
+            return [], _dedupe_notes(notes)
 
         verdicts = self._classify(candidates, keyword)
         selected: list[SerpResult] = []
-        seen_domains: set[str] = set()
-        fallback_pool: list[SerpResult] = []
         for r in candidates:
             v = verdicts.get(r.position) or {}
-            reason = v.get("reason", "not an affiliate review site")
-            if v.get("is_affiliate_review") and r.domain not in seen_domains:
+            if v.get("is_affiliate_review"):
                 selected.append(r)
-                seen_domains.add(r.domain)
                 if len(selected) == target:
                     break
             else:
-                notes.append(f"pos {r.position} ({r.domain}) skipped: {reason}")
-                if "official" not in reason.lower() and r.domain not in seen_domains:
-                    fallback_pool.append(r)
-
-        if len(selected) < target:
-            for r in fallback_pool:
-                if len(selected) >= target:
-                    break
-                if r.domain in seen_domains:
-                    continue
-                selected.append(r)
-                seen_domains.add(r.domain)
-                notes.append(
-                    f"pos {r.position} ({r.domain}) included as fallback competitor "
-                    f"(no clear affiliate site found in top-{len(results)})."
-                )
+                reason = v.get("reason", "not a casino-review affiliate site")
+                notes.append(f"{r.domain} (pos {r.position}) skipped — {reason}")
 
         if len(selected) < target:
             notes.append(
-                f"Only {len(selected)} competitor site(s) available within "
-                f"top-{len(results)} (no affiliate sites in the SERP)."
+                f"Only {len(selected)} affiliate casino-review site(s) found within "
+                f"the top-{SERP_TOP_N} (target was {target})."
             )
-        return selected, notes
+        return selected, _dedupe_notes(notes)
 
     def _hard_excluded(self, r: SerpResult, notes: list[str]) -> bool:
         if any(bad in r.domain for bad in _HARD_EXCLUDE):
-            notes.append(f"pos {r.position} ({r.domain}) skipped: non-affiliate domain")
+            notes.append(f"{r.domain} (pos {r.position}) skipped — non-review platform")
             return True
         return False
 
@@ -114,8 +100,19 @@ class AffiliateFilter:
             parsed = json.loads(_extract_json(text))
             return {int(item["position"]): item for item in parsed}
         except (json.JSONDecodeError, KeyError, ValueError) as exc:
-            logger.warning("Classifier parse failed (%s); treating all as affiliate", exc)
-            return {r.position: {"is_affiliate_review": True} for r in results}
+            logger.warning("Classifier parse failed (%s); rejecting all candidates", exc)
+            return {}
+
+
+def _dedupe_notes(notes: list[str]) -> list[str]:
+    """Drop duplicate note lines while preserving order."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for n in notes:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
 
 
 def _extract_json(text: str) -> str:
